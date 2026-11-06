@@ -30,6 +30,7 @@ import           Agda.Utils.FileName              (absolute)
 import           Agda.Utils.Functor               ()
 import           Agda.Utils.IO.Directory          (findWithInfo)
 import           Agda.Utils.Monad                 (forM, forM_, unless, bracket_)
+import           Agda.Utils.Maybe                 (whenJustM)
 import           Agda.Utils.Null                  (unlessNullM)
 import           Agda.Utils.String                (delimiter)
 
@@ -121,4 +122,6 @@ checkModule (Just w) m src = bracket_ (useTC stPragmaOptions) (stPragmaOptions `
 checkModule Nothing m src = do
   mi <- Imp.getNonMainModuleInfo m (Just src)
   postCheckModule m src mi
+  -- --compile-while-checking without --parallel: the library's modules are compiled one by one here
+  whenJustM (useSession lensModuleChecked) ($ mi)
   pure $ pure ()

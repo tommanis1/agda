@@ -90,6 +90,9 @@ data CommandLineOptions = Options
   , optWriteInterfaces       :: Bool
   , optPragmaOptions         :: PragmaOptions
   , optOnlyScopeChecking     :: Bool
+  , optCompileWhileChecking  :: Bool
+    -- ^ Compile each module with the enabled backends right after checking it (in its parallel worker), not
+    --   all of them after the whole check; also makes @--build-library@ run the backends.
       -- ^ Should the top-level module only be scope-checked, and not type-checked?
   , optTransliterate         :: Bool
       -- ^ Should code points that are not supported by the locale be transliterated?

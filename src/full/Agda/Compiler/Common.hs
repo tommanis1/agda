@@ -41,8 +41,13 @@ import Agda.Utils.Maybe.Strict qualified as Strict
 import Agda.Utils.Impossible
 
 doCompile :: Monoid r => (IsMain -> Interface -> TCM r) -> IsMain -> Interface -> TCM r
-doCompile f isMain i = do
-  flip evalStateT Set.empty $ compilePrim $ doCompile' f isMain i
+doCompile = doCompileAfter Set.empty
+
+-- | 'doCompile', but leaving out the given modules, compiled already (@--compile-while-checking@); the rest of
+-- the graph is compiled imports first as before.
+doCompileAfter :: Monoid r => Set ModuleName -> (IsMain -> Interface -> TCM r) -> IsMain -> Interface -> TCM r
+doCompileAfter done f isMain i = do
+  flip evalStateT done $ compilePrim $ doCompile' f isMain i
   where
   -- The Agda.Primitive module is only loaded if the --no-load-primitives flag was not given,
   -- thus, only try to compile it if we have visited it.

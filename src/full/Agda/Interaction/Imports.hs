@@ -670,6 +670,14 @@ chaseModule workers mod main msrc = do
         mi <- locallyTC eChasePrefix (const (Just prefix)) $
           getInterface mod main (Just src)
 
+        -- With --compile-while-checking a worker's module is compiled
+        -- here, before it counts as done, so that the backends see its
+        -- importers after it ('Agda.Compiler.Backend.compileWhileChecking');
+        -- the main module is compiled after the check.
+        case main of
+          NotMainInterface -> whenJustM (useSession lensModuleChecked) ($ mi)
+          MainInterface{}  -> pure ()
+
         -- After we're done, update the shared DecodedModules map and
         -- signal our completion.
         liftIO do

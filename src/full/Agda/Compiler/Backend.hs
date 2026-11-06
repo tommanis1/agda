@@ -11,6 +11,7 @@ module Agda.Compiler.Backend
   , module CheckResult
     -- For Agda.Main
   , backendInteraction
+  , libraryInteraction
   , parseBackendOptions
     -- For InteractionTop
   , callBackend
@@ -21,8 +22,12 @@ module Agda.Compiler.Backend
 import Prelude hiding (null)
 
 import Control.DeepSeq
+import Control.Monad.IO.Class ( liftIO )
 
+import Data.IORef
+import Data.Map (Map)
 import qualified Data.Map as Map
+import Data.Set (Set)
 import qualified Data.Set as Set
 
 import Agda.Utils.GetOpt
@@ -34,8 +39,10 @@ import Agda.Compiler.ToTreeless
 import Agda.Interaction.Options
 import Agda.Interaction.FindFile
 import Agda.Interaction.Imports as CheckResult (CheckResult(CheckResult), crInterface, crWarnings, crMode)
+import qualified Agda.Interaction.Imports as Imp
 
 import Agda.Syntax.Common (BackendName)
+import Agda.Syntax.TopLevelModuleName (projectRoot)
 import Agda.Syntax.Treeless
 
 import Agda.TypeChecking.Errors (getAllWarnings)
@@ -135,6 +142,14 @@ parseBackendOptions backends argv opts0 =
 backendInteraction :: AbsolutePath -> [Backend] -> TCM () -> (AbsolutePath -> TCM CheckResult) -> TCM ()
 backendInteraction mainFile backends setup check = do
   setup
+  whileChecking <- optCompileWhileChecking <$> commandLineOptions
+  -- The compilers to run after the check: with --compile-while-checking, prepared now, the modules the check
+  -- compiles left out.
+  compilers <- if whileChecking
+    then do
+      src <- Imp.parseSource =<< srcFromPath mainFile
+      compileWhileChecking backends . filePath . projectRoot mainFile =<< pure (Imp.srcModuleName src)
+    else pure [ CompileAfter backend Nothing | Backend backend <- backends ]
   checkResult <- check mainFile
 
   -- reset warnings
@@ -144,7 +159,7 @@ backendInteraction mainFile backends setup check = do
   let isMain | noMain    = NotMain
              | otherwise = IsMain
 
-  sequence_ [ compilerMain backend isMain checkResult | Backend backend <- backends ]
+  sequence_ [ compilerMainAfter backend before isMain checkResult | CompileAfter backend before <- compilers ]
 
   -- print warnings that might have accumulated during compilation
   ws <- filter (not . isUnsolvedWarning . tcWarning) . Set.toAscList <$> getAllWarnings AllWarnings
@@ -157,7 +172,12 @@ backendInteraction mainFile backends setup check = do
 
 
 compilerMain :: Backend' opts env menv mod def -> IsMain -> CheckResult -> TCM ()
-compilerMain backend isMain0 checkResult = inCompilerEnv checkResult $ do
+compilerMain backend = compilerMainAfter backend Nothing
+
+-- | 'compilerMain' after a check that compiled some modules already: given the backend's environment they were
+-- compiled in and their results, only the rest of the graph is compiled, and 'postCompile' gets all of them.
+compilerMainAfter :: Backend' opts env menv mod def -> Maybe (env, IORef (CompiledSoFar mod)) -> IsMain -> CheckResult -> TCM ()
+compilerMainAfter backend before isMain0 checkResult = inCompilerEnv checkResult $ do
   locallyTC eActiveBackendName (const $ Just $ backendName backend) $ do
     -- BEWARE: Do not use @optOnlyScopeChecking@ here; it does not authoritatively describe the type-checking mode!
     -- InteractionTop currently may invoke type-checking with scope checking regardless of that flag.
@@ -172,8 +192,10 @@ compilerMain backend isMain0 checkResult = inCompilerEnv checkResult $ do
       {-then-} (return NotMain)
       {-else-} (return isMain0)
 
-    env  <- preCompile backend (options backend)
-    mods <- doCompile
+    (env, CompiledSoFar done doneNames) <- case before of
+      Nothing          -> (, CompiledSoFar Map.empty Set.empty) <$> preCompile backend (options backend)
+      Just (env, made) -> (env ,) <$> liftIO (readIORef made)
+    mods <- (done <>) <$> doCompileAfter doneNames
         -- This inner function is called for both `Agda.Primitive` and the module in question,
         -- and all (distinct) imported modules. So avoid shadowing "isMain" or "i".
         (\ifaceIsMain iface ->
@@ -205,3 +227,64 @@ compileDef' :: Backend' opts env menv mod def -> env -> menv -> IsMain -> Defini
 compileDef' backend env menv isMain def =
   setCurrentRange (defName def) $
     compileDef backend env menv isMain def
+
+-- Compiling while checking ----------------------------------------------
+
+-- | The modules a backend has compiled while they were checked: each one's result, and their names, which
+-- 'doCompileAfter' leaves out.
+data CompiledSoFar mod = CompiledSoFar (Map TopLevelModuleName mod) (Set ModuleName)
+
+-- | A backend to run after the check, with the environment and results of what it compiled during it, if
+-- anything.
+data CompileAfter where
+  CompileAfter :: Backend' opts env menv mod def -> Maybe (env, IORef (CompiledSoFar mod)) -> CompileAfter
+
+-- | Prepare the backends to compile each module right after it is checked (@--compile-while-checking@): run their
+-- 'preCompile' now, and set the hook that a parallel worker runs on its module before the module counts as done
+-- ('Agda.Interaction.Imports.chaseModule'). So a module is compiled after its imports, as 'doCompile' orders them,
+-- and in parallel with the modules it is independent of. The output directory is the one given, unless
+-- @--compile-dir@ is.
+compileWhileChecking :: [Backend] -> FilePath -> TCM [CompileAfter]
+compileWhileChecking backends root = do
+  dir <- fromMaybe root . optCompileDir <$> commandLineOptions
+  compilers <- forM backends \ (Backend backend) -> do
+    env  <- inCompileDir dir $ preCompile backend (options backend)
+    made <- liftIO $ newIORef $ CompiledSoFar Map.empty Set.empty
+    pure (CompileAfter backend (Just (env, made)), compileChecked backend env made dir)
+  setSession lensModuleChecked $ Just \ mi -> mapM_ (($ mi) . snd) compilers
+  pure $ map fst compilers
+
+-- | Compile a module that has just been checked, in its worker's state, and record the result. The warnings
+-- compiling it gives are printed here, since the worker's state does not outlive it.
+compileChecked :: Backend' opts env menv mod def -> env -> IORef (CompiledSoFar mod) -> FilePath -> ModuleInfo -> TCM ()
+compileChecked backend env made dir mi = do
+  let i = miInterface mi
+  (r, ws) <- inCompileDir dir $ locallyTC eActiveBackendName (const $ Just $ backendName backend) do
+    stTCWarnings `setTCLens` empty
+    setInterface i
+    r  <- compileModule backend env NotMain i
+    ws <- filter (not . isUnsolvedWarning . tcWarning) . Set.toAscList <$> getAllWarnings AllWarnings
+    pure (r, ws)
+  unless (null ws) $ alwaysReportSDoc "warning" 1 $ vcat $ concatMap (\ w -> [ "", prettyTCM w ]) ws
+  liftIO $ atomicModifyIORef' made \ (CompiledSoFar m names) ->
+    (CompiledSoFar (Map.insert (iTopLevelModuleName i) r m) (Set.insert (iModuleName i) names), ())
+
+-- | Run an action with the output directory set, in a state it does not change.
+inCompileDir :: FilePath -> TCM a -> TCM a
+inCompileDir dir act = localTCState do
+  opts <- getsTC $ stPersistentOptions . stPersistentState
+  setCommandLineOptions opts { optCompileDir = Just dir }
+  act
+
+-- | @--build-library@ with backends: the library's modules are compiled as they are checked
+-- (@--compile-while-checking@, which this requires), into @--compile-dir@ or the library's root, and each backend's
+-- 'postCompile' runs once on all of them.
+libraryInteraction :: [Backend] -> FilePath -> TCM () -> TCM ()
+libraryInteraction backends root build = do
+  compilers <- compileWhileChecking backends root
+  build
+  forM_ compilers \ (CompileAfter backend before) -> forM_ before \ (env, made) -> do
+    CompiledSoFar mods _ <- liftIO $ readIORef made
+    dir <- fromMaybe root . optCompileDir <$> commandLineOptions
+    inCompileDir dir $ locallyTC eActiveBackendName (const $ Just $ backendName backend) $
+      postCompile backend env NotMain mods

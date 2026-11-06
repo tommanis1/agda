@@ -22,6 +22,7 @@ import qualified Data.Text as T
 import GHC.Conc (getNumProcessors)
 
 import System.Environment ( getArgs, getProgName )
+import System.Directory ( getCurrentDirectory )
 import System.Exit ( exitSuccess, ExitCode )
 import System.FilePath ( takeFileName )
 import Agda.Utils.GetOpt
@@ -200,8 +201,13 @@ pattern FrontEndJson  = FrontEndInteraction InteractionJson
 
 {-# COMPLETE FrontEndBuildLibrary, FrontEndEmacs, FrontEndJson, FrontEndRepl #-}
 
-buildLibraryInteractor :: Interactor ()
-buildLibraryInteractor setup _check = do setup; buildLibrary
+-- | @--build-library@; with backends (and @--compile-while-checking@), each module is compiled as it is checked.
+buildLibraryInteractor :: [Backend] -> Interactor ()
+buildLibraryInteractor []       setup _check = do setup; buildLibrary
+buildLibraryInteractor backends setup _check = do
+  setup
+  root <- liftIO getCurrentDirectory
+  libraryInteraction backends root buildLibrary
 
 -- | Emacs/JSON mode. Note that it ignores the "check" action because it calls typeCheck directly.
 interactionInteractor :: InteractionFormat -> Interactor ()
@@ -246,11 +252,12 @@ getInteractor configuredBackends maybeInputFile opts = do
           return $ Just $ interactionInteractor i
         -- --build-library
         FrontEndBuildLibrary -> do
-          noBackends fe  -- Issue #8024: Backends are not supported yet.
+          -- Issue #8024: backends run only when each module is compiled as it is checked.
+          unless (optCompileWhileChecking opts) $ noBackends fe
           unless (optUseLibs opts) $
             throwError "--build-library cannot be combined with --no-libraries"
           noInputFile fe
-          return $ Just buildLibraryInteractor
+          return $ Just $ buildLibraryInteractor enabledBackends
   where
     -- NOTE: The notion of a backend being "enabled" *just* refers to this top-level interaction mode selection. The
     -- interaction/interactive front-ends may still invoke available backends even if they are not "enabled".

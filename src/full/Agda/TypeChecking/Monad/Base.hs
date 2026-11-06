@@ -442,6 +442,11 @@ data SessionState = SessionState
     --   See the documentation of 'InteractionOutputCallback'.
     --   Set by the interactor (Terminal (default), Emacs, JSON),
     --   remaining fixed throughout the session.
+  , stSessionModuleChecked :: Maybe (ModuleInfo -> TCM ())
+    -- ^ Run by a parallel worker on each module it has checked, in the
+    --   worker's own state, before the module counts as done for its
+    --   importers. With @--compile-while-checking@ it compiles the module
+    --   with the enabled backends ('Agda.Compiler.Backend.compileWhileChecking').
   }
   deriving (Generic)
 
@@ -516,6 +521,7 @@ initSessionState primLibDir = SessionState
   , stSessionBackends                  = empty
   , stSessionModuleToSourceId          = empty
   , stSessionInteractionOutputCallback = defaultInteractionOutputCallback
+  , stSessionModuleChecked             = Nothing
   }
 
 -- | Empty persistent state.
@@ -678,6 +684,9 @@ lensBuiltinModuleIds = lensFileDict . lensFileDictBuiltinModuleIds
 
 lensPrimitiveLibDir :: Lens' SessionState PrimitiveLibDir
 lensPrimitiveLibDir = lensFileDict . lensFileDictPrimitiveLibDir
+
+lensModuleChecked :: Lens' SessionState (Maybe (ModuleInfo -> TCM ()))
+lensModuleChecked f s = f (stSessionModuleChecked s) <&> \ x -> s { stSessionModuleChecked = x }
 
 lensInteractionOutputCallback :: Lens' SessionState InteractionOutputCallback
 lensInteractionOutputCallback f s = f (stSessionInteractionOutputCallback s) <&> \ x -> s { stSessionInteractionOutputCallback = x }
@@ -7550,7 +7559,7 @@ instance NFData OpenedModule
 instance NFData IsAxiom
 
 instance NFData SessionState where
-  rnf (SessionState backends fileDict moduleToSourceId _interactionCallback) =
+  rnf (SessionState backends fileDict moduleToSourceId _interactionCallback _moduleChecked) =
     rnf backends `seq` rnf fileDict `seq` rnf moduleToSourceId
 
 instance NFData PrimFun where
