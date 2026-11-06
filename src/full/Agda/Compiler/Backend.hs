@@ -259,7 +259,12 @@ compileWhileChecking backends root = do
 compileChecked :: Backend' opts env menv mod def -> env -> IORef (CompiledSoFar mod) -> FilePath -> ModuleInfo -> TCM ()
 compileChecked backend env made dir mi = do
   let i = miInterface mi
-  (r, ws) <- inCompileDir dir $ locallyTC eActiveBackendName (const $ Just $ backendName backend) do
+  -- The hook runs in the worker of a module's importer, under the environment of the import's scope checking (its
+  -- opaque block, abstract mode, context). The post-check pass compiles in the top-level environment with abstract
+  -- and opaque ignored ('inCompilerEnv'), so we do too: otherwise a backend reads the module's own opaque or abstract
+  -- definitions as 'AbstractDefn' (agda2hs panicked on an extended lambda inside an opaque block).
+  (r, ws) <- inCompileDir dir $ localTC (const initEnv) $ ignoreAbstractMode $
+             locallyTC eActiveBackendName (const $ Just $ backendName backend) do
     stTCWarnings `setTCLens` empty
     setInterface i
     r  <- compileModule backend env NotMain i
