@@ -29,6 +29,7 @@ defaultOptions = Options
   , optPrintVersion          = Nothing
   , optPrintHelp             = Nothing
   , optBuildLibrary          = False
+  , optBuildModules          = Nothing
   , optSetup                 = False
   , optEmacsMode             = empty
   , optInteractive           = False

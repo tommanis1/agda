@@ -11,12 +11,13 @@ import qualified Data.Set as Set
 
 import           System.Directory                 (getCurrentDirectory)
 import qualified System.FilePath.Find             as Find
+import           System.FilePath                  ((</>))
 
 import           Agda.Interaction.FindFile        (hasAgdaExtension, checkModuleName)
 import           Agda.Interaction.Imports         (TCWorkers, Source, MainInterface(..))
 import qualified Agda.Interaction.Imports         as Imp
 import           Agda.Interaction.Library         (pattern AgdaLibFile, _libIncludes, _libPragmas, getAgdaLibFile)
-import           Agda.Interaction.Options         (optOnlyScopeChecking)
+import           Agda.Interaction.Options         (optOnlyScopeChecking, optBuildModules)
 
 import           Agda.Syntax.Abstract.Name        (noModuleName)
 import           Agda.Syntax.Position             (beginningOfFile)
@@ -32,7 +33,7 @@ import           Agda.Utils.IO.Directory          (findWithInfo)
 import           Agda.Utils.Monad                 (forM, forM_, unless, bracket_)
 import           Agda.Utils.Maybe                 (whenJustM)
 import           Agda.Utils.Null                  (unlessNullM)
-import           Agda.Utils.String                (delimiter)
+import           Agda.Utils.String                (delimiter, trim)
 
 import           Agda.Utils.Impossible            (__IMPOSSIBLE__)
 
@@ -57,9 +58,13 @@ buildLibrary = do
   -- Import the primitive modules
   Imp.importPrimitiveModules
 
-  -- Find all modules in the include paths of the library.
-  files <- sort . map Find.infoPath . concat <$> forM paths \ path -> do
-    liftIO $ findWithInfo (pure True) (hasAgdaExtension <$> Find.filePath) path
+  -- The modules to build: those --build-modules lists (relative to the library root), else all modules in the
+  -- include paths of the library.
+  files <- optBuildModules <$> commandLineOptions >>= \case
+    Just list -> liftIO $ sort . map (cwd </>) . filter (\ l -> not (null l) && take 1 l /= "#") . map trim . lines
+                   <$> readFile list
+    Nothing   -> sort . map Find.infoPath . concat <$> forM paths \ path -> do
+      liftIO $ findWithInfo (pure True) (hasAgdaExtension <$> Find.filePath) path
 
   -- Call the type-checker on all these modules.
   -- (Code copied from Agda.Main.)

@@ -64,6 +64,9 @@ data CommandLineOptions = Options
   , optPrintVersion          :: Maybe PrintAgdaVersion
   , optPrintHelp             :: Maybe Help
   , optBuildLibrary          :: Bool
+  , optBuildModules          :: Maybe FilePath
+    -- ^ @--build-modules FILE@: build these modules (the files listed, one per line) as @--build-library@
+    --   builds the library's, instead of every module under its include paths.
       -- ^ @--build-library@: Build all modules in the current library.
   , optSetup                 :: Bool
       -- ^ Force Agda to self-setup at startup.

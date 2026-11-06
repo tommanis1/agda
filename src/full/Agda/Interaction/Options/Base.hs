@@ -1434,7 +1434,9 @@ informationOptions = ("Setup and basic information",)
 
 mainModeOptions :: (String, [OptDescr (Flag CommandLineOptions)])
 mainModeOptions = ("Main modes of operation",)
-    [ Option []     ["build-library"] (NoArg \ o -> return o{ optBuildLibrary = True })
+    [ Option []     ["build-modules"] (ReqArg (\ f o -> return o{ optBuildLibrary = True, optBuildModules = Just f }) "FILE")
+                    "build the modules whose files FILE lists (one per line, relative to the library root; blank lines and lines starting with # skipped) as --build-library builds all of the library's"
+    , Option []     ["build-library"] (NoArg \ o -> return o{ optBuildLibrary = True })
                     "build all modules included by the @.agda-lib@ file in the current directory"
 
     , Option ['I']  ["interactive"] (NoArg interactiveFlag)
