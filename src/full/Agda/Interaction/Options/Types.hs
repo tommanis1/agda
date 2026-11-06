@@ -91,6 +91,9 @@ data CommandLineOptions = Options
   , optPragmaOptions         :: PragmaOptions
   , optOnlyScopeChecking     :: Bool
   , optCompileWhileChecking  :: Bool
+  , optEvictInterfaces       :: Bool
+    -- ^ With @--parallel@, drop a decoded interface once no module still to be checked in the run reads it
+    --   (batch mode: a later load decodes it again).
     -- ^ Compile each module with the enabled backends right after checking it (in its parallel worker), not
     --   all of them after the whole check; also makes @--build-library@ run the backends.
       -- ^ Should the top-level module only be scope-checked, and not type-checked?

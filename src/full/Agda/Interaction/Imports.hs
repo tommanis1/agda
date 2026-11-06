@@ -28,6 +28,7 @@ module Agda.Interaction.Imports
   , TCWorkers
   , wantsParallelChecking
   , chaseModule
+  , spawningRoots
   , setOptionsFromSourcePragmas
 
   -- Currently only used by test/api/Issue1168.hs:
@@ -55,6 +56,7 @@ import Data.HashMap.Strict qualified as HMap
 import Data.ByteString qualified as B
 import Data.Set (Set)
 import Data.Set qualified as Set
+import Data.Tuple qualified as Tuple
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Lazy qualified as TL
@@ -499,7 +501,68 @@ data TCWorkers = Workers
     -- ^ The shared 'DecodedModules' where workers can put their results.
   , workerStarted    :: !(IORef Int)
     -- ^ How many threads have actually started their work. Used for progress reporting.
+  , workerGraph      :: !(Maybe (MVar ImportGraph))
+    -- ^ With @--evict-interfaces@: what is known of the import graph, to drop a decoded module from
+    --   'workerModules' once no module still to be checked reads it.
   }
+
+-- | The import graph as the workers find it (@--evict-interfaces@). A module is /released/, and its decoded
+-- interface dropped from the shared map, once it is finished and every module importing it is released: then
+-- no module still to be checked has it in its import closure. Nothing is released while the graph may still
+-- grow: while a spawned module has not registered its imports, or more roots are coming ('spawningRoots').
+data ImportGraph = ImportGraph
+  { gImports      :: !(Map TopLevelModuleName [TopLevelModuleName])
+    -- ^ Each registered module's direct imports.
+  , gPending      :: !(Map TopLevelModuleName Int)
+    -- ^ For a module, how many modules importing it are registered and not yet released.
+  , gFinished     :: !(Set TopLevelModuleName)
+    -- ^ Checked modules, not yet released.
+  , gUnregistered :: !Int
+    -- ^ Spawned modules whose imports are not yet registered.
+  , gRootsOpen    :: !Bool
+    -- ^ More roots may be spawned.
+  }
+
+-- | Modules that the graph now allows releasing, and the graph without them, after they released their imports.
+releasable :: ImportGraph -> ([TopLevelModuleName], ImportGraph)
+releasable g
+  | gUnregistered g > 0 || gRootsOpen g = ([], g)
+  | otherwise = go [] g [ m | m <- Set.toList (gFinished g), pending g m == 0 ]
+  where
+    pending g m = Map.findWithDefault 0 m (gPending g)
+    go out g [] = (out, g)
+    go out g (m : ms)
+      | Set.member m (gFinished g), pending g m == 0 =
+          let imps = Map.findWithDefault [] m (gImports g)
+              g'   = g { gFinished = Set.delete m (gFinished g)
+                       , gImports  = Map.delete m (gImports g)
+                       , gPending  = foldr (Map.adjust (subtract 1)) (Map.delete m (gPending g)) imps }
+          in go (m : out) g' (imps ++ ms)
+      | otherwise = go out g ms
+
+-- | Apply a change to the import graph and drop the decoded interfaces it releases.
+updateGraph :: MonadIO m => TCWorkers -> (ImportGraph -> ImportGraph) -> m ()
+updateGraph workers f = forM_ (workerGraph workers) \ var -> liftIO do
+  out <- modifyMVar var \ g -> pure $ Tuple.swap $ releasable (f g)
+  unless (null out) $ atomicModifyIORef (workerModules workers) \ ms -> (foldr Map.delete ms out, ())
+
+-- | For @--build-library@: roots are being spawned while the given action runs, so nothing is released before
+-- they all are.
+spawningRoots :: Maybe TCWorkers -> TCM a -> TCM a
+spawningRoots Nothing act = act
+spawningRoots (Just workers) act = do
+  updateGraph workers \ g -> g { gRootsOpen = True }
+  act <* updateGraph workers \ g -> g { gRootsOpen = False }
+
+-- | A decoded module with, transitively, the modules it imports: what checking a module that imports it reads.
+closureOf :: DecodedModules -> TopLevelModuleName -> DecodedModules
+closureOf ms = go Map.empty . pure
+  where
+    go acc [] = acc
+    go acc (x : xs)
+      | Map.member x acc = go acc xs
+      | Just mi <- Map.lookup x ms = go (Map.insert x mi acc) (map fst (iImportedModules (miInterface mi)) ++ xs)
+      | otherwise = go acc xs
 
 -- | If the user has asked for it, prepare the type checker for loading
 -- in parallel, and return a 'TCWorkers' instance that can be used to
@@ -522,10 +585,14 @@ wantsParallelChecking = fmap optParallelChecking commandLineOptions >>= \case
     threads <- liftIO $ newMVar mempty
     results <- liftIO . newIORef =<< getDecodedModules
     started <- liftIO $ newIORef 0
+    evict   <- optEvictInterfaces <$> commandLineOptions
+    graph   <- if not evict then pure Nothing else
+      fmap Just $ liftIO $ newMVar $ ImportGraph Map.empty Map.empty Set.empty 0 False
     pure Workers
       { workerThreads    = threads
       , workerModules    = results
       , workerStarted    = started
+      , workerGraph      = graph
       }
 
 -- | Gets the prefix string to use for reporting the progress message
@@ -575,9 +642,16 @@ chaseModule workers mod main msrc = do
     use var = liftIO (readMVar var) >>= \case
       Just exc -> throwError exc
       Nothing -> do
-        setDecodedModules =<< liftIO (readIORef (workerModules workers))
+        shared <- liftIO (readIORef (workerModules workers))
+        case workerGraph workers of
+          Nothing -> setDecodedModules shared
+          -- with eviction, only what checking an importer of mod reads, so that this state does not keep
+          -- every decoded module alive
+          Just{}  -> setDecodedModules . Map.union (closureOf shared mod) =<< getDecodedModules
         getDecodedModule mod >>= \case
           Just mi -> pure mi
+          -- released before an importer found late: read again from its interface file
+          Nothing | Just{} <- workerGraph workers -> getNonMainModuleInfo mod Nothing
           Nothing -> __IMPOSSIBLE_VERBOSE__ $
             "internal error: parallel loading had thread responsible for "
             <> show (Agda.Syntax.Common.Pretty.pretty mod)
@@ -588,6 +662,7 @@ chaseModule workers mod main msrc = do
       Nothing  -> do
         var <- newEmptyMVar
         let nmap = HMap.insert mod var wmap
+        updateGraph workers \ g -> g { gUnregistered = gUnregistered g + 1 }
         nmap `seq` pure (nmap, Right var)
 
   -- In the critical section that holds workerThreads, we just decide
@@ -654,9 +729,16 @@ chaseModule workers mod main msrc = do
               locallyTC eImportStack (tl:) checkForImportCycle
               chaseModule workers tl NotMainInterface Nothing
 
-            pure $ Endo (act:)
+            pure (Endo (act:), Set.singleton tl)
 
           _ -> pure mempty
+
+        -- Register the imports, so that they are kept until this module is released.
+        let imported = Set.toList (snd imports)
+        updateGraph workers \ g -> g
+          { gImports      = Map.insert mod imported (gImports g)
+          , gPending      = foldr (\ i -> Map.insertWith (+) i 1) (gPending g) imported
+          , gUnregistered = gUnregistered g - 1 }
 
         -- Now we wait for all the dependencies and, when that's done,
         -- we can just type-check the module as usual.
@@ -664,7 +746,7 @@ chaseModule workers mod main msrc = do
         -- where they have been placed in the DecodedModules map, so the
         -- normal type-checking code will just reuse them when we get
         -- around to actually scope checking the import.
-        sequence_ (appEndo imports [])
+        sequence_ (appEndo (fst imports) [])
 
         prefix <- thisWorkerPrefix workers
         mi <- locallyTC eChasePrefix (const (Just prefix)) $
@@ -682,7 +764,8 @@ chaseModule workers mod main msrc = do
         -- signal our completion.
         liftIO do
           atomicModifyIORef (workerModules workers) \v -> (Map.insert mod mi v, ())
-          putMVar var Nothing
+        updateGraph workers \ g -> g { gFinished = Set.insert mod (gFinished g) }
+        liftIO $ putMVar var Nothing
 
 -- | Type checks the main file of the interaction.
 --   This could be the file loaded in the interacting editor (emacs),

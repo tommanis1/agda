@@ -67,7 +67,7 @@ buildLibrary = do
   opts <- commandLineOptions
   par <- Imp.wantsParallelChecking
 
-  checks <- forM files \ inputFile -> do
+  checks <- Imp.spawningRoots par $ forM files \ inputFile -> do
 
       path :: AbsolutePath
         <- liftIO (absolute inputFile)
@@ -117,7 +117,12 @@ checkModule :: Maybe TCWorkers -> TopLevelModuleName -> Source -> TCM (TCM ())
 checkModule (Just w) m src = bracket_ (useTC stPragmaOptions) (stPragmaOptions `setTCLens`) do
   Imp.setOptionsFromSourcePragmas True src
   mip <- Imp.chaseModule w m NotMainInterface (Just src)
-  pure $ mip >>= postCheckModule m src
+  pure do
+    -- waiting puts the module's decoded imports in this state; it reads only the warnings, so it does not
+    -- keep them (with --evict-interfaces they could not be dropped otherwise)
+    before <- getDecodedModules
+    mip >>= postCheckModule m src
+    setDecodedModules before
 
 checkModule Nothing m src = do
   mi <- Imp.getNonMainModuleInfo m (Just src)

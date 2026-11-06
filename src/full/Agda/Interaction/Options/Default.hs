@@ -43,6 +43,7 @@ defaultOptions = Options
   , optPragmaOptions         = defaultPragmaOptions
   , optOnlyScopeChecking     = False
   , optCompileWhileChecking  = False
+  , optEvictInterfaces       = False
   , optTransliterate         = False
   , optDiagnosticsColour     = AutoColour
   , optMdOnlyAgdaBlocks      = False
