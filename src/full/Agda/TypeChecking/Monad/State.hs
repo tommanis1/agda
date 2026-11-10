@@ -4,8 +4,6 @@ module Agda.TypeChecking.Monad.State where
 
 import qualified Control.Exception as E
 
-import Control.DeepSeq           (rnf)
-import Control.Exception         (evaluate)
 import Control.Monad.Trans       (MonadIO, liftIO)
 import Control.Monad.Trans.Maybe (MaybeT(MaybeT), runMaybeT)
 
@@ -606,16 +604,16 @@ updateInstanceDefs = over stInstanceDefs
 modifyInstanceDefs :: (TempInstanceTable -> TempInstanceTable) -> TCM ()
 modifyInstanceDefs = modifyTC . updateInstanceDefs
 
-getAllInstanceDefs :: TCM TempInstanceTable
-getAllInstanceDefs = do
-  (table, xs) <- useTC stInstanceDefs
-  itable <- useTC (stImports . sigInstances)
-  let table' = table <> itable
-  () <- liftIO $ evaluate (rnf table')
-  return (table', xs)
+-- | The instance tables: this module's (with the instances whose type is not known yet) and the imported one.
+--
+-- They are not merged. An instance search looks a goal up in each ('Agda.TypeChecking.InstanceArguments'), which
+-- finds what a lookup in the merged table finds. Merging them here, and forcing the result, walked every instance
+-- in scope at every instance search.
+getAllInstanceDefs :: TCM (TempInstanceTable, InstanceTable)
+getAllInstanceDefs = (,) <$> useTC stInstanceDefs <*> useTC (stImports . sigInstances)
 
 getAnonInstanceDefs :: TCM (Set QName)
-getAnonInstanceDefs = snd <$> getAllInstanceDefs
+getAnonInstanceDefs = snd <$> useTC stInstanceDefs
 
 -- | Remove an instance from the set of unresolved instances.
 clearUnknownInstance :: QName -> TCM ()

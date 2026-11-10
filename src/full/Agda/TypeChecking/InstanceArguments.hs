@@ -274,8 +274,11 @@ initialInstanceCandidates blockOverlap instTy = do
     getScopeDefs n = do
       rel <- viewTC eRelevance
 
-      InstanceTable tree counts <- lift getInstanceDefs
-      QueryResult qs blocker <- lift $ lookupDT (unEl instTy) tree
+      (InstanceTable local counts, InstanceTable imported icounts) <- lift getInstanceDefs
+      -- One lookup per table. A value is found in the merged tree exactly when it is found in its own: merging
+      -- ('mergeDT') keeps every entry's path and only shares case nodes, and the blocker is that of the case
+      -- nodes visited, which are the same ones.
+      QueryResult qs blocker <- lift $ (<>) <$> lookupDT (unEl instTy) local <*> lookupDT (unEl instTy) imported
 
       reportSDoc "tc.instance.candidates.search" 20 $ vcat
         [ "instance candidates from signature for goal:"
@@ -296,7 +299,7 @@ initialInstanceCandidates blockOverlap instTy = do
         patternViolation blocker
 
       -- Some more class-specific profiling.
-      lift $ whenProfile Profile.Instances case Map.lookup n counts of
+      lift $ whenProfile Profile.Instances case Map.lookup n (Map.unionWith (+) counts icounts) of
         Just tot -> do
           n <- prettyTCM n
           -- Record the overall total number of candidates that were
@@ -1234,12 +1237,12 @@ resolveInstanceHead kwr q = do
 
 -- | Try to solve the instance definitions whose type is not yet known, report
 --   an error if it doesn't work and return the instance table otherwise.
-getInstanceDefs :: TCM InstanceTable
+getInstanceDefs :: TCM (InstanceTable, InstanceTable)
 getInstanceDefs = do
-  (table, pending) <- getAllInstanceDefs
+  ((table, pending), imported) <- getAllInstanceDefs
   unless (null pending) $ do
     patternViolation alwaysUnblock  -- TODO: more refined unblocking
-  return table
+  return (table, imported)
 
 -- | Prune an 'Interface' to remove any instances that would be
 -- inapplicable in child modules.
