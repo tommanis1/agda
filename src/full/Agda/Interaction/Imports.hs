@@ -1053,6 +1053,15 @@ getInterface x isMain msrc = locallyTC eImportStack (x :) do
 
       -- Record the module as visited.
       visitModule mi
+
+      -- --compile-while-checking without --parallel: every module is compiled here, when it is first visited,
+      -- so after its imports, as a parallel worker compiles its module in 'chaseModule'. (With --parallel this
+      -- function also runs in the workers, which compile their own module themselves.)
+      case isMain of
+        NotMainInterface -> fmap optParallelChecking commandLineOptions >>= \case
+          Sequential -> whenJustM (useSession lensModuleChecked) ($ mi)
+          Parallel{} -> pure ()
+        MainInterface{} -> pure ()
       return mi
   where
     addOptionsCompatibilityWarnings :: PragmaOptions -> ModuleInfo -> TCM ModuleInfo
