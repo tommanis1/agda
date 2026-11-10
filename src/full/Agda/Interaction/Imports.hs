@@ -573,6 +573,36 @@ validatedThisRun x h = useSession lensValidated >>= \case
   Nothing  -> pure False
   Just ref -> (Just h ==) . Map.lookup x <$> liftIO (readIORef ref)
 
+-- | For a parallel worker, before it knows its module's imports: the module's interface, if the interface file
+-- exists and was made from the source as it is now, and the interface file's path. The imports are then the
+-- interface's ('iImportedModules') and the source is not parsed: a worker used to parse every module to find its
+-- imports, which the sequential path never does for a module whose interface is current. Whether the interface
+-- can be used is still decided by 'getInterface' once the imports are done (their hashes, the options); if not,
+-- the module is parsed and checked there as before.
+currentInterface :: TopLevelModuleName -> TCM (Maybe (ModuleInfo, String))
+currentInterface x = runMaybeT do
+  let ok b = MaybeT $ pure $ if b then Just () else Nothing
+  ok . not =<< lift ignoreAllInterfaces
+  file@(SourceFile fi) <- lift $ findFile x
+  builtin <- lift $ isBuiltinModule fi
+  noUserInterfaces <- lift ignoreInterfaces
+  ok $ not noUserInterfaces || isJust builtin
+  ifile   <- MaybeT $ findInterfaceFile' file
+  hashes  <- MaybeT $ liftIO $ getInterfaceFileHashes ifile
+  path    <- lift $ srcFilePath file
+  sourceH <- liftIO $ hashTextFile path
+  ok $ sourceH == fst hashes
+  i <- MaybeT $ readInterface ifile
+  ok $ iTopLevelModuleName i == x
+  pure ( ModuleInfo
+           { miInterface  = i
+           , miWarnings   = empty
+           , miIsBuiltin  = builtin
+           , miMode       = ModuleTypeChecked
+           , miSourceFile = file
+           }
+       , filePath $ intFilePath ifile )
+
 -- | A decoded module with, transitively, the modules it imports: what checking a module that imports it reads.
 closureOf :: DecodedModules -> TopLevelModuleName -> DecodedModules
 closureOf ms = go Map.empty . pure
@@ -724,36 +754,53 @@ chaseModule workers mod main msrc = do
 
       detach do
         reportSDoc "import.parallel" 15 $ "checking " <> P.pretty mod
-        src <- maybe (parseSource =<< findFile mod) pure msrc
+        -- A module whose interface is current is not parsed: its imports are the interface's.
+        current <- case msrc of
+          Just{}  -> pure Nothing
+          Nothing -> currentInterface mod
 
-        -- Now we traverse through all the imports and collect the
-        -- "promises" for waiting on them. This will spawn the threads
-        -- to check them.
-        imports <- flip foldDecl (srcModule src) \case
-          C.Import opn r x as is -> do
-            let dec = C.NiceImport opn r x as is
-            traceCall (ScopeCheckDeclaration dec) do
+        (msrc', imports) <- case current of
+          Just (cmi, _) -> do
+            found <- forM (map fst (iImportedModules (miInterface cmi))) \ tl -> do
+              act <- locallyTC eImportStack (mod:) do
+                locallyTC eImportStack (tl:) checkForImportCycle
+                chaseModule workers tl NotMainInterface Nothing
+              pure (Endo (act:), Set.singleton tl)
+            pure (Nothing, mconcat found)
 
-            tl  <- S.topLevelModuleName (rawTopLevelModuleNameForQName x)
+          Nothing -> do
+            src <- maybe (parseSource =<< findFile mod) pure msrc
 
-            -- This is a bit fiddly. 'getInterface' below will push mod
-            -- onto the import stack, so if we push it around the entire
-            -- thread, we get a spurious cyclic import error.
-            --
-            -- However, we can't also push tl, because *its* worker
-            -- thread would end up pushing it, so *it* would be on the
-            -- stack twice, too!
-            --
-            -- We have to check for import cycles here because GHC does
-            -- not seem to always generate the proper "thread blocked
-            -- indefinitely on MVar operation".
-            act <- locallyTC eImportStack (mod:) do
-              locallyTC eImportStack (tl:) checkForImportCycle
-              chaseModule workers tl NotMainInterface Nothing
+            -- Now we traverse through all the imports and collect the
+            -- "promises" for waiting on them. This will spawn the threads
+            -- to check them.
+            imports <- flip foldDecl (srcModule src) \case
+              C.Import opn r x as is -> do
+                let dec = C.NiceImport opn r x as is
+                traceCall (ScopeCheckDeclaration dec) do
 
-            pure (Endo (act:), Set.singleton tl)
+                tl  <- S.topLevelModuleName (rawTopLevelModuleNameForQName x)
 
-          _ -> pure mempty
+                -- This is a bit fiddly. 'getInterface' below will push mod
+                -- onto the import stack, so if we push it around the entire
+                -- thread, we get a spurious cyclic import error.
+                --
+                -- However, we can't also push tl, because *its* worker
+                -- thread would end up pushing it, so *it* would be on the
+                -- stack twice, too!
+                --
+                -- We have to check for import cycles here because GHC does
+                -- not seem to always generate the proper "thread blocked
+                -- indefinitely on MVar operation".
+                act <- locallyTC eImportStack (mod:) do
+                  locallyTC eImportStack (tl:) checkForImportCycle
+                  chaseModule workers tl NotMainInterface Nothing
+
+                pure (Endo (act:), Set.singleton tl)
+
+              _ -> pure mempty
+
+            pure (Just src, imports)
 
         -- Register the imports, so that they are kept until this module is released.
         let imported = Set.toList (snd imports)
@@ -771,8 +818,14 @@ chaseModule workers mod main msrc = do
         sequence_ (appEndo (fst imports) [])
 
         prefix <- thisWorkerPrefix workers
-        mi <- locallyTC eChasePrefix (const (Just prefix)) $
-          getInterface mod main (Just src)
+        mi <- locallyTC eChasePrefix (const (Just prefix)) do
+          -- The interface read above is offered to 'getInterface' as decoded (waiting for the imports may have
+          -- replaced this state's decoded modules, so it is stored only now), with the messages a load gives.
+          forM_ current \ (cmi, ifp) -> do
+            chaseMsg "Loading " mod (Just ifp)
+            reportWarningsForModule mod $ iWarnings (miInterface cmi)
+            storeDecodedModule cmi
+          getInterface mod main msrc'
 
         -- With --compile-while-checking a worker's module is compiled
         -- here, before it counts as done, so that the backends see its
