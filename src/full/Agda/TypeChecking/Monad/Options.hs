@@ -91,16 +91,25 @@ checkPragmaOptionConsistency oldOpts newOpts = do
 -- An empty list of relative include directories (@'Left' []@) is
 -- interpreted as @["."]@.
 setCommandLineOptions :: CommandLineOptions -> TCM ()
-setCommandLineOptions opts = do
-  root <- liftIO (absolute =<< getCurrentDirectory)
-  setCommandLineOptions' root opts
+setCommandLineOptions = setCommandLineOptionsAt (liftIO (absolute =<< getCurrentDirectory))
 
 setCommandLineOptions'
   :: AbsolutePath
      -- ^ The base directory of relative paths.
   -> CommandLineOptions
   -> TCM ()
-setCommandLineOptions' root opts = do
+setCommandLineOptions' = setCommandLineOptionsAt . pure
+
+-- | The base directory is asked for only when the options have no absolute include paths yet. Options that were
+-- set before have them, and 'Agda.Interaction.Imports.getInterface' sets the persistent options again at every
+-- import: resolving the working directory each time (a walk of the file system per path component) was most of
+-- what loading up-to-date interfaces cost under @--parallel@.
+setCommandLineOptionsAt
+  :: TCM AbsolutePath
+     -- ^ The base directory of relative paths.
+  -> CommandLineOptions
+  -> TCM ()
+setCommandLineOptionsAt getRoot opts = do
       -- Andreas, 2025-08-05, PR #8037
       -- 'setLibraryPaths' below can fail,
       -- and to print the error correctly
@@ -112,6 +121,7 @@ setCommandLineOptions' root opts = do
       -- Compute the set of include paths.
       incs <- case optAbsoluteIncludePaths opts of
         [] -> do
+          root  <- getRoot
           opts' <- setLibraryPaths root opts
           let incs = optIncludePaths opts'
           setIncludeDirs incs root
