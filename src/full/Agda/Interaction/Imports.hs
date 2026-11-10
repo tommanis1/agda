@@ -29,6 +29,8 @@ module Agda.Interaction.Imports
   , wantsParallelChecking
   , chaseModule
   , spawningRoots
+  , holdRoot
+  , releaseRoot
   , setOptionsFromSourcePragmas
 
   -- Currently only used by test/api/Issue1168.hs:
@@ -554,6 +556,23 @@ spawningRoots (Just workers) act = do
   updateGraph workers \ g -> g { gRootsOpen = True }
   act <* updateGraph workers \ g -> g { gRootsOpen = False }
 
+-- | A root has no importer, so it would be released the moment it finishes, before the thread that spawned it
+-- has collected it: that thread would then read the root and its whole released closure again from the interface
+-- files. So the spawning thread holds each root (counts as one importer) until it has collected it
+-- ('releaseRoot'). Called while roots are still being spawned ('spawningRoots'), when nothing is released.
+holdRoot :: MonadIO m => TCWorkers -> TopLevelModuleName -> m ()
+holdRoot workers m = updateGraph workers \ g -> g { gPending = Map.insertWith (+) m 1 (gPending g) }
+
+-- | The spawning thread has collected a root it held ('holdRoot').
+releaseRoot :: MonadIO m => TCWorkers -> TopLevelModuleName -> m ()
+releaseRoot workers m = updateGraph workers \ g -> g { gPending = Map.adjust (subtract 1) m (gPending g) }
+
+-- | Has a worker of this parallel run validated the module at this full hash ('stSessionValidated')?
+validatedThisRun :: TopLevelModuleName -> Hash -> TCM Bool
+validatedThisRun x h = useSession lensValidated >>= \case
+  Nothing  -> pure False
+  Just ref -> (Just h ==) . Map.lookup x <$> liftIO (readIORef ref)
+
 -- | A decoded module with, transitively, the modules it imports: what checking a module that imports it reads.
 closureOf :: DecodedModules -> TopLevelModuleName -> DecodedModules
 closureOf ms = go Map.empty . pure
@@ -585,6 +604,9 @@ wantsParallelChecking = fmap optParallelChecking commandLineOptions >>= \case
     threads <- liftIO $ newMVar mempty
     results <- liftIO . newIORef =<< getDecodedModules
     started <- liftIO $ newIORef 0
+    -- what this run's workers have validated, so that no worker validates it against the files again
+    validated <- liftIO $ newIORef Map.empty
+    setSession lensValidated (Just validated)
     evict   <- optEvictInterfaces <$> commandLineOptions
     graph   <- if not evict then pure Nothing else
       fmap Just $ liftIO $ newMVar $ ImportGraph Map.empty Map.empty Set.empty 0 False
@@ -759,6 +781,13 @@ chaseModule workers mod main msrc = do
         case main of
           NotMainInterface -> whenJustM (useSession lensModuleChecked) ($ mi)
           MainInterface{}  -> pure ()
+
+        -- The module is validated for this run: the other workers, which meet
+        -- it in their own states, need not read its files again.
+        whenJustM (useSession lensValidated) \ ref -> liftIO do
+          -- the hash alone, forced: the map must not keep the interface alive
+          let h = iFullHash (miInterface mi)
+          h `seq` atomicModifyIORef ref \ v -> (Map.insert mod h v, ())
 
         -- After we're done, update the shared DecodedModules map and
         -- signal our completion.
@@ -1166,7 +1195,12 @@ getStoredInterface x file@(SourceFile fi) msrc = do
 
     -- If it's cached ignoreInterfaces has no effect;
     -- to avoid typechecking a file more than once.
-    Right mi -> do
+    -- A worker of this parallel run has validated it at this hash: it is taken as it is. (Each worker meets the
+    -- modules of its import closure in a state that has visited none of them; reading the interface file's hashes
+    -- and hashing the source again for each made a load cost the number of modules times the closure's size.)
+    Right mi -> lift (validatedThisRun x (iFullHash (miInterface mi))) >>= \case
+     True  -> loadDecodedModule file mi
+     False -> do
       (ifile, hashes) <- getIFileHashesET
 
       let ifp = filePath $ intFilePath ifile

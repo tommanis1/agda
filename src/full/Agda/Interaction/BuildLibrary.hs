@@ -122,11 +122,14 @@ checkModule :: Maybe TCWorkers -> TopLevelModuleName -> Source -> TCM (TCM ())
 checkModule (Just w) m src = bracket_ (useTC stPragmaOptions) (stPragmaOptions `setTCLens`) do
   Imp.setOptionsFromSourcePragmas True src
   mip <- Imp.chaseModule w m NotMainInterface (Just src)
+  -- kept until this thread has collected it below (--evict-interfaces would release a finished root at once)
+  Imp.holdRoot w m
   pure do
     -- waiting puts the module's decoded imports in this state; it reads only the warnings, so it does not
     -- keep them (with --evict-interfaces they could not be dropped otherwise)
     before <- getDecodedModules
     mip >>= postCheckModule m src
+    Imp.releaseRoot w m
     setDecodedModules before
 
 checkModule Nothing m src = do
