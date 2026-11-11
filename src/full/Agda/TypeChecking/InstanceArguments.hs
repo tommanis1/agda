@@ -550,6 +550,8 @@ findInstance' m cands = do
       reportSDoc "tc.instance" 15 $ "findInstance 3: t =" <+> prettyTCM t
       reportSLn "tc.instance" 70 $ "findInstance 3: t: " ++! prettyShow t
 
+      cands <- narrowCandidates t cands
+
       mcands <-
         -- Temporarily remove other instance constraints to avoid
         -- redundant solution attempts
@@ -606,6 +608,33 @@ findInstance' m cands = do
             prettyTCM (map' candidateTerm cs)
           whenProfile Profile.Instances $ tick "findInstance: multiple candidates"
           return (Just (cs, neverUnblock))
+
+-- | The candidates of a constraint are looked up when the constraint is made ('initialInstanceCandidates'), which
+-- is often before the arguments of the class are known: the discrimination tree then returns every instance of
+-- the class, and that list stays with the constraint. Before the candidates are tried, the tree is asked again
+-- with the goal as it is now, and the global candidates it no longer returns are dropped. Each of them would be
+-- rejected by 'checkCandidates' as well, after a state save, the creation of its argument metas and a unification.
+--
+-- Only global candidates are dropped, and nothing is added: local candidates do not come from the tree, and
+-- candidates that earlier rounds have rejected stay rejected.
+narrowCandidates :: Type -> [Candidate] -> TCM [Candidate]
+narrowCandidates t cands
+  -- one candidate is tried as it is: its failure is the error the user sees
+  | null (drop 1 cands) || not (any isGlobal cands) = pure cands
+  | otherwise = billTo [Benchmark.Typing, Benchmark.InstanceSearch, Benchmark.InitialCandidates] do
+      (InstanceTable local _, InstanceTable imported _) <- getInstanceDefs
+      QueryResult qs _ <- (<>) <$> lookupDT (unEl t) local <*> lookupDT (unEl t) imported
+      let keep c = case candidateKind c of
+            GlobalCandidate q -> q `Set.member` qs
+            LocalCandidate    -> True
+          cands' = filter keep cands
+      whenProfile Profile.Instances $
+        tickN "candidates dropped by a second lookup" (fromIntegral (length cands - length cands'))
+      pure cands'
+  where
+    isGlobal c = case candidateKind c of
+      GlobalCandidate{} -> True
+      LocalCandidate    -> False
 
 insidePi :: Type -> (Type -> TCM a) -> TCM a
 insidePi t ret = reduce (unEl t) >>= \case
