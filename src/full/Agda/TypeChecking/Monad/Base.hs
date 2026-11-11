@@ -447,13 +447,16 @@ data SessionState = SessionState
     --   worker's own state, before the module counts as done for its
     --   importers. With @--compile-while-checking@ it compiles the module
     --   with the enabled backends ('Agda.Compiler.Backend.compileWhileChecking').
-  , stSessionValidated :: Maybe (Strict.IORef (Map TopLevelModuleName Hash))
+  , stSessionValidated :: Maybe (Strict.IORef (Map TopLevelModuleName (Hash, [OptionsPragma])))
     -- ^ With @--parallel@: the full hash of each module a worker of this
-    --   run has validated (loaded from a current interface, or checked).
+    --   run has validated (loaded from a current interface, or checked),
+    --   and the options its library file gives it.
     --   Every worker starts in a state that has visited nothing, so it
     --   meets each module of its import closure again; for a module in
     --   this map it does not read the interface file's hashes or the
-    --   source a second time ('Agda.Interaction.Imports.getStoredInterface').
+    --   source a second time ('Agda.Interaction.Imports.getStoredInterface'),
+    --   and does not look for the module's library file a second time
+    --   ('Agda.Interaction.Imports.loadDecodedModule').
   }
   deriving (Generic)
 
@@ -696,7 +699,7 @@ lensPrimitiveLibDir = lensFileDict . lensFileDictPrimitiveLibDir
 lensModuleChecked :: Lens' SessionState (Maybe (ModuleInfo -> TCM ()))
 lensModuleChecked f s = f (stSessionModuleChecked s) <&> \ x -> s { stSessionModuleChecked = x }
 
-lensValidated :: Lens' SessionState (Maybe (Strict.IORef (Map TopLevelModuleName Hash)))
+lensValidated :: Lens' SessionState (Maybe (Strict.IORef (Map TopLevelModuleName (Hash, [OptionsPragma]))))
 lensValidated f s = f (stSessionValidated s) <&> \ x -> s { stSessionValidated = x }
 
 lensInteractionOutputCallback :: Lens' SessionState InteractionOutputCallback

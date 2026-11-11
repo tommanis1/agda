@@ -569,9 +569,16 @@ releaseRoot workers m = updateGraph workers \ g -> g { gPending = Map.adjust (su
 
 -- | Has a worker of this parallel run validated the module at this full hash ('stSessionValidated')?
 validatedThisRun :: TopLevelModuleName -> Hash -> TCM Bool
-validatedThisRun x h = useSession lensValidated >>= \case
-  Nothing  -> pure False
-  Just ref -> (Just h ==) . Map.lookup x <$> liftIO (readIORef ref)
+validatedThisRun x h = isJust <$> validatedLibraryOptions x h
+
+-- | The options the module's library file gives it, if a worker of this parallel run has validated the module at
+-- this full hash ('stSessionValidated').
+validatedLibraryOptions :: TopLevelModuleName -> Hash -> TCM (Maybe [OptionsPragma])
+validatedLibraryOptions x h = useSession lensValidated >>= \case
+  Nothing  -> pure Nothing
+  Just ref -> liftIO (readIORef ref) <&> \ v -> case Map.lookup x v of
+    Just (h', opts) | h' == h -> Just opts
+    _                         -> Nothing
 
 -- | For a parallel worker, before it knows its module's imports: the module's interface, if the interface file
 -- exists and was made from the source as it is now, and the interface file's path. The imports are then the
@@ -837,10 +844,12 @@ chaseModule workers mod main msrc = do
 
         -- The module is validated for this run: the other workers, which meet
         -- it in their own states, need not read its files again.
-        whenJustM (useSession lensValidated) \ ref -> liftIO do
+        whenJustM (useSession lensValidated) \ ref -> do
           -- the hash alone, forced: the map must not keep the interface alive
           let h = iFullHash (miInterface mi)
-          h `seq` atomicModifyIORef ref \ v -> (Map.insert mod h v, ())
+          -- with the library options, found here once for all the workers that will import the module
+          opts <- flip getLibraryOptions mod =<< srcFilePath (miSourceFile mi)
+          liftIO $ h `seq` atomicModifyIORef ref \ v -> (Map.insert mod (h, opts) v, ())
 
         -- After we're done, update the shared DecodedModules map and
         -- signal our completion.
@@ -1329,7 +1338,10 @@ loadDecodedModule sf@(SourceFile fi) mi = do
   -- want the pragmas to apply to interactive commands in the UI.
   -- Jesper, 2021-04-18: Check for changed options in library files!
   -- (see #5250)
-  libOptions <- lift $ getLibraryOptions file name
+  -- A worker of this parallel run that validated the module at this hash has found them: they are taken from
+  -- it. (Finding them resolves the module's directory and its library file through every symbolic link, and
+  -- each worker did that for each module of its import closure: most of the file system calls of a load.)
+  libOptions <- lift $ maybe (getLibraryOptions file name) pure =<< validatedLibraryOptions name (iFullHash i)
   lift $ mapM_ setOptionsFromPragma (libOptions ++ iFilePragmaOptions i)
 
   -- Check that options that matter haven't changed compared to
