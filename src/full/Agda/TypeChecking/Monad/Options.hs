@@ -3,7 +3,7 @@ module Agda.TypeChecking.Monad.Options where
 
 import Prelude hiding (null, (||), not)
 
-import Control.Monad          ( unless, when )
+import Control.Monad          ( forM, unless, when )
 import Control.Monad.IO.Class ( MonadIO(..) )
 import Control.Monad.Except
 import Control.Monad.Reader

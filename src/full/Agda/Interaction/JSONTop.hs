@@ -9,6 +9,7 @@ import Control.Monad.IO.Class
 
 import Data.ByteString.Lazy (ByteString)
 import qualified Data.ByteString.Lazy.Char8 as BS
+import Data.Functor ((<&>))
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
 import qualified Data.Set as Set

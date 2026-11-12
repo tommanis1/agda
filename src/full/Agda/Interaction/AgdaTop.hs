@@ -11,6 +11,7 @@ import Control.Monad.State          ( evalStateT, runStateT )
 import Control.Monad.Trans          ( lift )
 
 import Data.Char
+import Data.Functor ((<&>))
 import qualified Data.List as List
 import qualified Data.Map as Map
 import Data.Text (Text)
