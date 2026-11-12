@@ -83,6 +83,8 @@ data CommandLineOptions = Options
       -- ^ @--interaction@ mode.
   , optJSONInteraction       :: Bool
       -- ^ @--interaction-json@ mode.
+  , optInteractionServer     :: Bool
+      -- ^ With @--interaction-json@: several sessions in one process, see 'Agda.Interaction.JSONTop.jsonServer'.
   , optExitOnError           :: !Bool
       -- ^ Exit if an interactive command fails.
   , optCompileDir            :: Maybe FilePath

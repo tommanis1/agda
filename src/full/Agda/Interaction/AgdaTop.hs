@@ -2,6 +2,8 @@
 
 module Agda.Interaction.AgdaTop
     ( repl
+    , replWith
+    , parseCommandLine
     , relocateSources
     ) where
 
@@ -12,6 +14,7 @@ import Control.Monad.Trans          ( lift )
 
 import Data.Char
 import Data.Functor ((<&>))
+import qualified Agda.Utils.IORef.Strict as Strict
 import qualified Data.List as List
 import qualified Data.Map as Map
 import Data.Text (Text)
@@ -43,6 +46,33 @@ repl callback prompt setup = do
       hSetEncoding  stdout utf8
       hSetEncoding  stdin  utf8
 
+    replWith readCommand (putStr prompt >> hFlush stdout) putStrLn callback setup
+  where
+  -- Reads the next command from stdin.
+
+  readCommand :: IO Command
+  readCommand = do
+    done <- isEOF
+    if done then
+      return Done
+    else do
+      r <- getLine
+      _ <- return $! length r     -- force to read the full input line
+      maybe readCommand return (parseCommandLine r)
+
+-- | A line of input as a command; 'Nothing' for an empty line or a comment.
+parseCommandLine :: String -> Maybe Command
+parseCommandLine r = case dropWhile isSpace r of
+  ""          -> Nothing
+  ('-':'-':_) -> Nothing
+  _           -> Just $ case parseIOTCM r of
+    Right cmd -> Command cmd
+    Left err  -> Error err
+
+-- | 'repl' with the commands taken from the first argument. The second argument is run when the next command
+--   is awaited, the third writes a line that is not a response (a command that could not be read).
+replWith :: IO Command -> IO () -> (String -> IO ()) -> InteractionOutputCallback -> TCM () -> TCM ()
+replWith readCommand prompt say callback setup = do
     setInteractionOutputCallback callback
 
     commands <- liftIO $ initialiseCommandQueue readCommand
@@ -60,9 +90,7 @@ repl callback prompt setup = do
     Bench.reset
     done <- Bench.billTo [] $ do
 
-      liftIO $ do
-        putStr prompt
-        hFlush stdout
+      liftIO prompt
       r <- maybeAbort runInteraction
       case r of
         Done      -> return True -- Done.
@@ -72,28 +100,11 @@ repl callback prompt setup = do
           if exit
             then liftIO (exitAgdaWith CommandError)
             else do
-              liftIO (putStrLn s)
+              liftIO (say s)
               return False
 
     lift Bench.print
     unless done interact'
-
-  -- Reads the next command from stdin.
-
-  readCommand :: IO Command
-  readCommand = do
-    done <- isEOF
-    if done then
-      return Done
-    else do
-      r <- getLine
-      _ <- return $! length r     -- force to read the full input line
-      case dropWhile isSpace r of
-        ""          -> readCommand
-        ('-':'-':_) -> readCommand
-        _           -> case parseIOTCM r of
-          Right cmd -> return $ Command cmd
-          Left err  -> return $ Error err
 
 
 -- | With @--keep-modules-by-content@ a module that was decoded under earlier include paths is used again under
@@ -106,7 +117,9 @@ repl callback prompt setup = do
 --   writes with escapes (a quote or backslash in a directory name) is left as it is.
 relocateSources :: TCM (Maybe (Text -> Text))
 relocateSources = do
-  earlier <- useSession lensEarlierSources
+  own     <- useSession lensEarlierSources
+  shared  <- maybe (pure Map.empty) (fmap sharedSources . liftIO . Strict.readIORef) =<< useSession lensShared
+  let earlier = Map.unionWith Map.union own shared
   if Map.null earlier then pure Nothing else do
     current <- useSession lensModuleToSourceId
     dict    <- useSession lensFileDict

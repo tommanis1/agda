@@ -580,6 +580,43 @@ validatedLibraryOptions x h = useSession lensValidated >>= \case
     Just (h', opts) | h' == h -> Just opts
     _                         -> Nothing
 
+-- | How many modules the sessions of an @--interaction-server@ process share at most. When one more is put, the
+--   quarter that was used longest ago is dropped from the table (a session that has one of them keeps it).
+sharedModulesLimit :: Int
+sharedModulesLimit = 2000
+
+-- | With @--interaction-server@: the module with this name and full hash, if a session has put it.
+sharedModule :: TopLevelModuleName -> Hash -> TCM (Maybe ModuleInfo)
+sharedModule x h = useSession lensShared >>= \case
+  Nothing  -> pure Nothing
+  Just ref -> liftIO $ atomicModifyIORef ref \ s -> case Map.lookup (x, h) (sharedModules s) of
+    Nothing      -> (s, Nothing)
+    Just (_, mi) ->
+      let t = sharedClock s + 1
+      in  (s { sharedClock = t, sharedModules = Map.insert (x, h) (t, mi) (sharedModules s) }, Just mi)
+
+-- | With @--interaction-server@: put a module that this session decoded or checked, for the other sessions, and
+--   record the path of its source file (the ranges of the module, and of modules this session checks with it,
+--   carry that path). If the module is there already, that one stays.
+shareModule :: ModuleInfo -> TCM ()
+shareModule mi = whenJustM (useSession lensShared) \ ref -> do
+  path <- srcFilePath (miSourceFile mi)
+  let i   = miInterface mi
+      x   = iTopLevelModuleName i
+      key = (x, iFullHash i)
+  liftIO $ atomicModifyIORef ref \ s ->
+    let t    = sharedClock s + 1
+        ms   = Map.insertWith (\ _new (_, old) -> (t, old)) key (t, mi) (sharedModules s)
+        ms'  | Map.size ms <= sharedModulesLimit = ms
+             | otherwise =
+                 let cut = List.sort (map fst (Map.elems ms)) !! (Map.size ms `div` 4)
+                 in  Map.filter ((>= cut) . fst) ms
+    in  ( s { sharedClock   = t
+            , sharedModules = ms'
+            , sharedSources = Map.unionWith Map.union (sharedSources s) (earlierSource path x)
+            }
+        , () )
+
 -- | For a parallel worker, before it knows its module's imports: the module's interface, if the interface file
 -- exists and was made from the source as it is now, and the interface file's path. The imports are then the
 -- interface's ('iImportedModules') and the source is not parsed: a worker used to parse every module to find its
@@ -1054,6 +1091,7 @@ getInterface x isMain msrc = locallyTC eImportStack (x :) do
       -- if any warnings were encountered.
       when (moduleCheckMode isMain == ModuleTypeChecked && null (miWarnings mi)) do
         storeDecodedModule mi
+        shareModule mi
 
       reportS "warning.import" 10
         [ "module: " ++ show (moduleNameParts x)
@@ -1234,8 +1272,12 @@ getStoredInterface x file@(SourceFile fi) msrc = do
 
         reportSLn "import.iface" 5 $ "  no stored version, reading " ++ ifp
 
-        i <- maybeToExceptT "bad interface, re-type checking" $ MaybeT $
-          readInterface ifile
+        -- With --interaction-server: another session may have this module, decoded from an interface file with
+        -- the same full hash or checked from the same sources. Then the file is not decoded.
+        shared <- lift $ sharedModule x (snd hashes)
+        i <- case shared of
+          Just mi -> pure (miInterface mi)
+          Nothing -> maybeToExceptT "bad interface, re-type checking" $ MaybeT $ readInterface ifile
 
         -- Ensure that the given module name matches the one in the file.
         let topLevelName = iTopLevelModuleName i
@@ -1245,7 +1287,7 @@ getStoredInterface x file@(SourceFile fi) msrc = do
 
         isBuiltinMod <- isBuiltinModule fi
 
-        lift $ chaseMsg "Loading " x $ Just ifp
+        lift $ chaseMsg (if isJust shared then "Sharing " else "Loading ") x $ Just ifp
         -- print imported warnings
         reportWarningsForModule x $ iWarnings i
 

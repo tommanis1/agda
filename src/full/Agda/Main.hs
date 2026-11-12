@@ -36,7 +36,7 @@ import Agda.Interaction.Options
 import Agda.Interaction.Options.BashCompletion (bashComplete, printedOptions)
 import Agda.Interaction.Options.Help (Help (..), helpTopicUsage)
 import Agda.Interaction.EmacsTop (mimicGHCi)
-import Agda.Interaction.JSONTop (jsonREPL)
+import Agda.Interaction.JSONTop (jsonREPL, jsonServer)
 import Agda.Interaction.FindFile ( SourceFile(SourceFile) )
 import Agda.Interaction.Imports qualified as Imp
 
@@ -210,9 +210,10 @@ buildLibraryInteractor backends setup _check = do
   libraryInteraction backends root buildLibrary
 
 -- | Emacs/JSON mode. Note that it ignores the "check" action because it calls typeCheck directly.
-interactionInteractor :: InteractionFormat -> Interactor ()
-interactionInteractor InteractionEmacs setup _check = mimicGHCi setup
-interactionInteractor InteractionJson  setup _check = jsonREPL  setup
+interactionInteractor :: Bool -> InteractionFormat -> Interactor ()
+interactionInteractor _     InteractionEmacs setup _check = mimicGHCi  setup
+interactionInteractor False InteractionJson  setup _check = jsonREPL   setup
+interactionInteractor True  InteractionJson  setup _check = jsonServer setup
 
 -- | The (deprecated) repl mode.
 replInteractor :: Maybe AbsolutePath -> Interactor ()
@@ -249,7 +250,7 @@ getInteractor configuredBackends maybeInputFile opts = do
           noBackends fe
           notJustScopeChecking fe
           noInputFile fe
-          return $ Just $ interactionInteractor i
+          return $ Just $ interactionInteractor (optInteractionServer opts) i
         -- --build-library
         FrontEndBuildLibrary -> do
           -- Issue #8024: backends run only when each module is compiled as it is checked.

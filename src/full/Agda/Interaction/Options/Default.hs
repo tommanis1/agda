@@ -35,6 +35,7 @@ defaultOptions = Options
   , optInteractive           = False
   , optGHCiInteraction       = False
   , optJSONInteraction       = False
+  , optInteractionServer     = False
   , optExitOnError           = False
   , optCompileDir            = Nothing
   , optGenerateVimFile       = False

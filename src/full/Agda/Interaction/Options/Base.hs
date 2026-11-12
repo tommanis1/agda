@@ -1204,6 +1204,9 @@ ghciInteractionFlag o = return $ o { optGHCiInteraction = True }
 jsonInteractionFlag :: Flag CommandLineOptions
 jsonInteractionFlag o = return $ o { optJSONInteraction = True }
 
+interactionServerFlag :: Flag CommandLineOptions
+interactionServerFlag o = return $ o { optInteractionServer = True }
+
 interactionExitFlag :: Flag CommandLineOptions
 interactionExitFlag o = return $ o { optExitOnError = True }
 
@@ -1449,6 +1452,8 @@ mainModeOptions = ("Main modes of operation",)
                     "for use with the Emacs mode"
     , Option []     ["interaction-json"] (NoArg jsonInteractionFlag)
                     "for use with other editors such as Atom"
+    , Option []     ["interaction-server"] (NoArg interactionServerFlag)
+                    "with --interaction-json: serve several sessions at once in this process; each input line is @SESSION followed by a command (or by close), each output line is @SESSION followed by a response; modules are shared between sessions by content"
     ]
 
 projectOptions :: (String, [OptDescr (Flag CommandLineOptions)])

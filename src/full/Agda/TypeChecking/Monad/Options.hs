@@ -11,11 +11,10 @@ import Control.Monad.State
 import Control.Monad.Writer
 
 import qualified Data.Graph as Graph
-import Data.List (dropWhileEnd, sort)
+import Data.List (sort)
 import Data.Map (Map)
 import qualified Data.Map as Map
 import qualified Data.Set as Set
-import qualified Data.Text as Text
 
 import System.Directory
 import System.FilePath
@@ -372,9 +371,7 @@ setIncludeDirs keepAll incs root = do
     old <- useSession lensModuleToSourceId
     new <- forM (Map.toList old) \ (m, f) -> do
       path <- srcFilePath f
-      pure case reverse (Text.splitOn "/" (Text.pack (filePath path))) of
-        file : dirs -> Map.singleton file (Map.singleton (dropWhileEnd Text.null dirs) m)
-        []          -> Map.empty
+      pure $ earlierSource path m
     modifySession lensEarlierSources \ es -> Map.unionsWith Map.union (es : new)
 
   -- A decoded module is kept if its top-level module name is resolved

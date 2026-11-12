@@ -1,5 +1,6 @@
 module Agda.Interaction.JSONTop
     ( jsonREPL
+    , jsonServer
     ) where
 
 import Control.Monad
@@ -9,7 +10,12 @@ import Control.Monad.IO.Class
 
 import Data.ByteString.Lazy (ByteString)
 import qualified Data.ByteString.Lazy.Char8 as BS
+import Control.Concurrent
+import Control.Exception (SomeException, catch, finally)
+import Data.Char (isSpace)
 import Data.Functor ((<&>))
+import qualified Data.Map as Map
+import System.IO
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
 import qualified Data.Set as Set
@@ -58,6 +64,9 @@ import qualified Agda.Syntax.Common.Pretty as P
 import Agda.Syntax.Common.Pretty
          ( Pretty(..), prettyShow )
 import Agda.Utils.Time
+import Agda.Utils.Atomic (newAtomic)
+import Agda.Utils.Monad (unlessM)
+import qualified Agda.Utils.IORef.Strict as Strict
          ( CPUTime(..) )
 
 import Agda.VersionCommit
@@ -71,11 +80,72 @@ import Agda.VersionCommit
 
 jsonREPL :: TCM () -> TCM ()
 jsonREPL = repl (liftIO . BS.putStrLn <=< relocated <=< jsonifyResponse) "JSON> "
-  where
-  -- source paths of earlier include paths in kept modules' ranges, see 'relocateSources'
-  relocated s = relocateSources <&> \case
-    Nothing -> s
-    Just f  -> BS.fromStrict $ T.encodeUtf8 $ f $ T.decodeUtf8 $ BS.toStrict s
+
+-- | Source paths of other include paths in the ranges of kept or shared modules, see 'relocateSources'.
+relocated :: ByteString -> TCM ByteString
+relocated s = relocateSources <&> \case
+  Nothing -> s
+  Just f  -> BS.fromStrict $ T.encodeUtf8 $ f $ T.decodeUtf8 $ BS.toStrict s
+
+-- | @--interaction-json --interaction-server@: several sessions in one process.
+--
+--   A line of input is @\@NAME COMMAND@, with a command as 'jsonREPL' takes it, or @\@NAME close@. The first
+--   line with a name starts the session of that name: a thread with a state of its own (its own file tables,
+--   options and loaded file), which runs the commands sent to it in order, as a process of its own would. Lines
+--   for different sessions are served at the same time. A line of output is @\@NAME@ and a response, @\@NAME
+--   JSON> @ when the session awaits its next command, @\@NAME closed@ when it has ended, or @\@NAME died:
+--   MESSAGE@ if it ended with an exception (the other sessions go on).
+--
+--   The sessions share decoded modules by name and full hash ('SharedModules'): a module that one session has
+--   decoded or checked is not decoded again by a session that finds, under its own include paths, an interface
+--   file with the same hash. The limits are the process's: one heap for all sessions.
+jsonServer :: TCM () -> TCM ()
+jsonServer setup = do
+  base   <- getSessionState   -- the backends and the primitive library; nothing has been loaded
+  env    <- askTC
+  shared <- liftIO $ Strict.newIORef $ SharedModules Map.empty 0 Map.empty
+  liftIO do
+    hSetBuffering stdout LineBuffering
+    hSetBuffering stdin  LineBuffering
+    hSetEncoding  stdout utf8
+    hSetEncoding  stdin  utf8
+    out      <- newMVar ()
+    sessions <- newMVar Map.empty
+    let
+      write name s = withMVar out \ _ -> do
+        putStr ('@' : name ++ " ")
+        BS.putStrLn s
+        hFlush stdout
+      say name = write name . BS.fromStrict . T.encodeUtf8 . T.pack . map (\ c -> if c == '\n' then ' ' else c)
+
+      start name = do
+        chan <- newChan
+        sess <- newAtomic base { stSessionShared = Just shared }
+        let body = replWith (readChan chan) (say name "JSON> ") (say name)
+                            (liftIO . write name <=< relocated <=< jsonifyResponse) setup
+            ended = do
+              modifyMVar_ sessions $ pure . Map.filter (/= chan)
+              say name "closed"
+        _ <- forkIO $ flip finally ended $
+          void (runTCM env (initStateFromSessionState sess) body)
+            `catch` \ (e :: SomeException) -> say name ("died: " ++ show e)
+        pure chan
+
+      loop = unlessM isEOF do
+        l <- getLine
+        case l of
+          '@' : rest | (name, cmd) <- break isSpace rest, not (null name) -> do
+            chan <- modifyMVar sessions \ m -> case Map.lookup name m of
+              Just c  -> pure (m, c)
+              Nothing -> start name <&> \ c -> (Map.insert name c m, c)
+            if words cmd == ["close"] then do
+              modifyMVar_ sessions $ pure . Map.delete name
+              writeChan chan Done
+            else forM_ (parseCommandLine cmd) (writeChan chan)
+          _ | all isSpace l -> pure ()
+            | otherwise     -> say "" "error: a line must start with @SESSION"
+        loop
+    loop
 
 instance EncodeTCM NameInScope where
 instance ToJSON NameInScope where

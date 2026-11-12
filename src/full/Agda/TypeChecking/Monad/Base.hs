@@ -59,6 +59,7 @@ import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.String
 import Data.Text (Text)
+import qualified Data.Text as T
 import qualified Data.Text.Lazy as TL
 import Data.Semigroup (Sum, Max)
 
@@ -452,6 +453,8 @@ data SessionState = SessionState
     --   paths this process used before the current ones. A module kept from then carries those paths in its
     --   ranges; where a frontend writes its output they are replaced by the module's file under the current
     --   include paths ('Agda.Interaction.AgdaTop.relocateSources').
+  , stSessionShared :: Maybe (Strict.IORef SharedModules)
+    -- ^ With @--interaction-server@: the modules that the sessions of this process share.
   , stSessionValidated :: Maybe (Strict.IORef (Map TopLevelModuleName (Hash, [OptionsPragma])))
     -- ^ With @--parallel@: the full hash of each module a worker of this
     --   run has validated (loaded from a current interface, or checked),
@@ -468,6 +471,24 @@ data SessionState = SessionState
 -- | Source files of earlier include paths, by the last component of their path; with each, the directories
 --   above it, innermost first, and the module it held.
 type EarlierSources = Map Text (Map [Text] TopLevelModuleName)
+
+-- | A source file and the module it holds, as an entry of 'EarlierSources'.
+earlierSource :: AbsolutePath -> TopLevelModuleName -> EarlierSources
+earlierSource path m = case reverse (T.splitOn "/" (T.pack (filePath path))) of
+  file : dirs -> Map.singleton file (Map.singleton (List.dropWhileEnd T.null dirs) m)
+  []          -> Map.empty
+
+-- | What the sessions of an @--interaction-server@ process share: decoded modules by name and full hash. The
+--   full hash ('iFullHash') covers the sources of the module's whole import closure, so two sessions that find an
+--   interface file with this name and hash, each under its own include paths, read the same interface from it, up
+--   to the file paths in ranges, which are of the session that decoded or checked the module. Those paths are all
+--   recorded in 'sharedSources', and replaced where a session writes its output.
+data SharedModules = SharedModules
+  { sharedModules :: !(Map (TopLevelModuleName, Hash) (Word64, ModuleInfo))
+    -- ^ With each module, the value of 'sharedClock' when it was last put or taken.
+  , sharedClock   :: !Word64
+  , sharedSources :: !EarlierSources
+  }
 
 -- | A part of the state which is not reverted when an error is thrown
 -- or the state is reset.
@@ -542,6 +563,7 @@ initSessionState primLibDir = SessionState
   , stSessionInteractionOutputCallback = defaultInteractionOutputCallback
   , stSessionModuleChecked             = Nothing
   , stSessionEarlierSources            = Map.empty
+  , stSessionShared                    = Nothing
   , stSessionValidated                 = Nothing
   }
 
@@ -711,6 +733,9 @@ lensModuleChecked f s = f (stSessionModuleChecked s) <&> \ x -> s { stSessionMod
 
 lensEarlierSources :: Lens' SessionState EarlierSources
 lensEarlierSources f s = f (stSessionEarlierSources s) <&> \ x -> s { stSessionEarlierSources = x }
+
+lensShared :: Lens' SessionState (Maybe (Strict.IORef SharedModules))
+lensShared f s = f (stSessionShared s) <&> \ x -> s { stSessionShared = x }
 
 lensValidated :: Lens' SessionState (Maybe (Strict.IORef (Map TopLevelModuleName (Hash, [OptionsPragma]))))
 lensValidated f s = f (stSessionValidated s) <&> \ x -> s { stSessionValidated = x }
@@ -7586,7 +7611,7 @@ instance NFData OpenedModule
 instance NFData IsAxiom
 
 instance NFData SessionState where
-  rnf (SessionState backends fileDict moduleToSourceId _interactionCallback _moduleChecked _earlierSources _validated) =
+  rnf (SessionState backends fileDict moduleToSourceId _interactionCallback _moduleChecked _earlierSources _shared _validated) =
     rnf backends `seq` rnf fileDict `seq` rnf moduleToSourceId
 
 instance NFData PrimFun where
