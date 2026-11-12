@@ -21,6 +21,7 @@ import Control.Monad.State    ( evalStateT )
 import Control.Monad.Trans    ( lift )
 
 import Data.List qualified as List
+import Data.Text qualified as T
 
 import Agda.Syntax.Common
 import Agda.Syntax.Common.Pretty as P
@@ -63,7 +64,12 @@ import Agda.VersionCommit
 --   'mimicGHCi' reads the Emacs frontend commands from stdin,
 --   interprets them and print the result into stdout.
 mimicGHCi :: TCM () -> TCM ()
-mimicGHCi = repl (liftIO . putStrLn . prettyShow <=< lispifyResponse) "Agda2> "
+mimicGHCi = repl (liftIO . putStrLn <=< relocated . prettyShow <=< lispifyResponse) "Agda2> "
+  where
+  -- source paths of earlier include paths in kept modules' ranges, see 'relocateSources'
+  relocated s = relocateSources <&> \case
+    Nothing -> s
+    Just f  -> T.unpack (f (T.pack s))
 
 -- | Convert Response to an elisp value for the interactive emacs frontend.
 

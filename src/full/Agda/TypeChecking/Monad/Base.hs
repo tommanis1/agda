@@ -447,6 +447,11 @@ data SessionState = SessionState
     --   worker's own state, before the module counts as done for its
     --   importers. With @--compile-while-checking@ it compiles the module
     --   with the enabled backends ('Agda.Compiler.Backend.compileWhileChecking').
+  , stSessionEarlierSources :: !EarlierSources
+    -- ^ With @--keep-modules-by-content@: the source files that module names were resolved to under include
+    --   paths this process used before the current ones. A module kept from then carries those paths in its
+    --   ranges; where a frontend writes its output they are replaced by the module's file under the current
+    --   include paths ('Agda.Interaction.AgdaTop.relocateSources').
   , stSessionValidated :: Maybe (Strict.IORef (Map TopLevelModuleName (Hash, [OptionsPragma])))
     -- ^ With @--parallel@: the full hash of each module a worker of this
     --   run has validated (loaded from a current interface, or checked),
@@ -459,6 +464,10 @@ data SessionState = SessionState
     --   ('Agda.Interaction.Imports.loadDecodedModule').
   }
   deriving (Generic)
+
+-- | Source files of earlier include paths, by the last component of their path; with each, the directories
+--   above it, innermost first, and the module it held.
+type EarlierSources = Map Text (Map [Text] TopLevelModuleName)
 
 -- | A part of the state which is not reverted when an error is thrown
 -- or the state is reset.
@@ -532,6 +541,7 @@ initSessionState primLibDir = SessionState
   , stSessionModuleToSourceId          = empty
   , stSessionInteractionOutputCallback = defaultInteractionOutputCallback
   , stSessionModuleChecked             = Nothing
+  , stSessionEarlierSources            = Map.empty
   , stSessionValidated                 = Nothing
   }
 
@@ -698,6 +708,9 @@ lensPrimitiveLibDir = lensFileDict . lensFileDictPrimitiveLibDir
 
 lensModuleChecked :: Lens' SessionState (Maybe (ModuleInfo -> TCM ()))
 lensModuleChecked f s = f (stSessionModuleChecked s) <&> \ x -> s { stSessionModuleChecked = x }
+
+lensEarlierSources :: Lens' SessionState EarlierSources
+lensEarlierSources f s = f (stSessionEarlierSources s) <&> \ x -> s { stSessionEarlierSources = x }
 
 lensValidated :: Lens' SessionState (Maybe (Strict.IORef (Map TopLevelModuleName (Hash, [OptionsPragma]))))
 lensValidated f s = f (stSessionValidated s) <&> \ x -> s { stSessionValidated = x }

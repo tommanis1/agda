@@ -44,6 +44,7 @@ defaultOptions = Options
   , optPragmaOptions         = defaultPragmaOptions
   , optOnlyScopeChecking     = False
   , optCompileWhileChecking  = False
+  , optKeepModulesByContent  = False
   , optEvictInterfaces       = False
   , optTransliterate         = False
   , optDiagnosticsColour     = AutoColour

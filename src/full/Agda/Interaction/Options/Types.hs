@@ -94,6 +94,10 @@ data CommandLineOptions = Options
   , optPragmaOptions         :: PragmaOptions
   , optOnlyScopeChecking     :: Bool
   , optCompileWhileChecking  :: Bool
+  , optKeepModulesByContent  :: Bool
+    -- ^ When the include paths change between two loads of one process, keep every decoded module (instead of
+    --   only those whose file path stays the same). A kept module is used again when the interface file at its
+    --   new path has the same hash; see 'Agda.TypeChecking.Monad.Options.setIncludeDirs'.
   , optEvictInterfaces       :: Bool
     -- ^ With @--parallel@, drop a decoded interface once no module still to be checked in the run reads it
     --   (batch mode: a later load decodes it again).

@@ -1213,6 +1213,9 @@ vimFlag o = return $ o { optGenerateVimFile = True }
 onlyScopeCheckingFlag :: Flag CommandLineOptions
 onlyScopeCheckingFlag o = return $ o { optOnlyScopeChecking = True }
 
+keepModulesByContentFlag :: Flag CommandLineOptions
+keepModulesByContentFlag o = return $ o { optKeepModulesByContent = True }
+
 evictInterfacesFlag :: Flag CommandLineOptions
 evictInterfacesFlag o = return $ o { optEvictInterfaces = True }
 
@@ -1471,6 +1474,8 @@ essentialConfigurationOptions = ("Essential type checker configuration",)
 
     , Option []     ["only-scope-checking"] (NoArg onlyScopeCheckingFlag)
                     "only scope-check the top-level module, do not type-check it"
+    , Option []     ["keep-modules-by-content"] (NoArg keepModulesByContentFlag)
+                    "in interaction, keep decoded modules when a load changes the include paths; a module is used again where the interface file at its new path has the same hash"
     , Option []     ["evict-interfaces"] (NoArg evictInterfacesFlag)
                     "with --parallel, drop each decoded interface once no module still to be checked reads it (batch runs)"
     , Option []     ["compile-while-checking"] (NoArg compileWhileCheckingFlag)

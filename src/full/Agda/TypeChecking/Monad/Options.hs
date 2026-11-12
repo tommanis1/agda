@@ -11,10 +11,11 @@ import Control.Monad.State
 import Control.Monad.Writer
 
 import qualified Data.Graph as Graph
-import Data.List (sort)
+import Data.List (dropWhileEnd, sort)
 import Data.Map (Map)
 import qualified Data.Map as Map
 import qualified Data.Set as Set
+import qualified Data.Text as Text
 
 import System.Directory
 import System.FilePath
@@ -124,7 +125,7 @@ setCommandLineOptionsAt getRoot opts = do
           root  <- getRoot
           opts' <- setLibraryPaths root opts
           let incs = optIncludePaths opts'
-          setIncludeDirs incs root
+          setIncludeDirs (optKeepModulesByContent opts) incs root
           List1.toList <$> getIncludeDirs
         incs -> return incs
       modifyTC $ Lens.setCommandLineOptions opts{ optAbsoluteIncludePaths = incs }
@@ -300,10 +301,21 @@ getIncludeDirs = do
 --
 -- An empty list is interpreted as @["."]@.
 
-setIncludeDirs :: [FilePath]    -- ^ New include directories.
+--
+-- With @--keep-modules-by-content@ (the first argument) every decoded module is kept. That is sound:
+-- 'Agda.Interaction.Imports.getStoredInterface' uses a kept module only if the interface file at the module's
+-- path under the new include directories has the kept interface's full hash and the source there has its
+-- source hash, and 'Agda.Interaction.Imports.loadDecodedModule' only if every import has the hash the
+-- interface was made with. The full hash covers the sources of the whole import closure, so a module that is
+-- used again is the one a fresh decoding of that interface file would give, except for the file paths in its
+-- ranges: those are of the directories it was decoded under, and are recorded here ('stSessionEarlierSources')
+-- to be replaced where output is written.
+
+setIncludeDirs :: Bool          -- ^ Keep all decoded modules if the include directories change?
+               -> [FilePath]    -- ^ New include directories.
                -> AbsolutePath  -- ^ The base directory of relative paths.
                -> TCM ()
-setIncludeDirs incs root = do
+setIncludeDirs keepAll incs root = do
   -- save the previous include dirs
   oldIncs <- getsTC Lens.getAbsoluteIncludePaths
 
@@ -343,7 +355,9 @@ setIncludeDirs incs root = do
     tcWarnings <- useTC stTCWarnings -- restore already generated warnings
     libCache   <- useTC stLibCache   -- restore cached project configs & .agda-lib files, since they use absolute paths
     decodedModules <- getDecodedModules
-    (keptDecodedModules, modFile) <- modulesToKeep incs decodedModules
+    (keptDecodedModules, modFile) <-
+      if keepAll then (decodedModules, Map.empty) <$ rememberSources
+      else modulesToKeep incs decodedModules
     resetAllState
     setTCLens stTCWarnings tcWarnings
     setTCLens stLibCache libCache
@@ -352,6 +366,17 @@ setIncludeDirs incs root = do
 
   Lens.putAbsoluteIncludePaths $ List1.toList incs
   where
+  -- The files that module names are resolved to at this point, added to 'stSessionEarlierSources'.
+  rememberSources :: TCM ()
+  rememberSources = do
+    old <- useSession lensModuleToSourceId
+    new <- forM (Map.toList old) \ (m, f) -> do
+      path <- srcFilePath f
+      pure case reverse (Text.splitOn "/" (Text.pack (filePath path))) of
+        file : dirs -> Map.singleton file (Map.singleton (dropWhileEnd Text.null dirs) m)
+        []          -> Map.empty
+    modifySession lensEarlierSources \ es -> Map.unionsWith Map.union (es : new)
+
   -- A decoded module is kept if its top-level module name is resolved
   -- to the same absolute path using the old and the new include
   -- directories, and the same applies to all dependencies.

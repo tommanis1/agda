@@ -1371,7 +1371,8 @@ loadDecodedModule sf@(SourceFile fi) mi = do
     lift $ ifTopLevelAndHighlightingLevelIs NonInteractive $
       highlightFromInterface i sf
 
-  return mi
+  -- With --keep-modules-by-content the module may have been decoded for a file at another path.
+  return mi { miSourceFile = sf }
 
 -- | Run the type checker on a file and create an interface.
 --

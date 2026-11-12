@@ -10,6 +10,7 @@ import Control.Monad.IO.Class
 import Data.ByteString.Lazy (ByteString)
 import qualified Data.ByteString.Lazy.Char8 as BS
 import qualified Data.Text as T
+import qualified Data.Text.Encoding as T
 import qualified Data.Set as Set
 
 import Agda.Interaction.AgdaTop
@@ -68,7 +69,12 @@ import Agda.VersionCommit
 --   interprets them, and outputs JSON-encoded strings. into stdout.
 
 jsonREPL :: TCM () -> TCM ()
-jsonREPL = repl (liftIO . BS.putStrLn <=< jsonifyResponse) "JSON> "
+jsonREPL = repl (liftIO . BS.putStrLn <=< relocated <=< jsonifyResponse) "JSON> "
+  where
+  -- source paths of earlier include paths in kept modules' ranges, see 'relocateSources'
+  relocated s = relocateSources <&> \case
+    Nothing -> s
+    Just f  -> BS.fromStrict $ T.encodeUtf8 $ f $ T.decodeUtf8 $ BS.toStrict s
 
 instance EncodeTCM NameInScope where
 instance ToJSON NameInScope where
