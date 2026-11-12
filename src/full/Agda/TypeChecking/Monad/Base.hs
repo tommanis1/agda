@@ -7586,7 +7586,7 @@ instance NFData OpenedModule
 instance NFData IsAxiom
 
 instance NFData SessionState where
-  rnf (SessionState backends fileDict moduleToSourceId _interactionCallback _moduleChecked _validated) =
+  rnf (SessionState backends fileDict moduleToSourceId _interactionCallback _moduleChecked _earlierSources _validated) =
     rnf backends `seq` rnf fileDict `seq` rnf moduleToSourceId
 
 instance NFData PrimFun where
