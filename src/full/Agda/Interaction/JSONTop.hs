@@ -4,7 +4,7 @@ module Agda.Interaction.JSONTop
     ) where
 
 import Control.Monad
-         ( (<=<), forM )
+         ( (<=<), forM, forM_, void )
 import Control.Monad.IO.Class
          ( MonadIO(..) )
 
@@ -22,7 +22,7 @@ import qualified Data.Set as Set
 
 import Agda.Interaction.AgdaTop
 import Agda.Interaction.Base
-         ( CommandState(..), CurrentFile(..), ComputeMode(..), Rewrite(..)
+         ( Command'(..), CommandState(..), CurrentFile(..), ComputeMode(..), Rewrite(..)
          , OutputConstraint_boot(..), OutputForm_boot(..))
 import Agda.Interaction.Output (OutputConstraint, OutputForm)
 import qualified Agda.Interaction.BasicOps as B
