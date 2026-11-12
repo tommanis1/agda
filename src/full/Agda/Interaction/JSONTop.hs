@@ -64,10 +64,10 @@ import qualified Agda.Syntax.Common.Pretty as P
 import Agda.Syntax.Common.Pretty
          ( Pretty(..), prettyShow )
 import Agda.Utils.Time
+         ( CPUTime(..) )
 import Agda.Utils.Atomic (newAtomic)
 import Agda.Utils.Monad (unlessM)
 import qualified Agda.Utils.IORef.Strict as Strict
-         ( CPUTime(..) )
 
 import Agda.VersionCommit
 
