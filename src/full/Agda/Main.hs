@@ -337,7 +337,11 @@ runAgdaWithOptions interactor progName opts = do
       liftIO case optParallelChecking opts of
         Parallel Nothing  -> setNumCapabilities =<< getNumProcessors
         Parallel (Just i) -> setNumCapabilities i
-        Sequential        -> setNumCapabilities 1
+        -- --interaction-server runs its sessions side by side, on as many capabilities as the run time was
+        -- started with (+RTS -N); every session comes through here when it starts.
+        Sequential
+          | optInteractionServer opts -> pure ()
+          | otherwise                 -> setNumCapabilities 1
 
     checkFile :: AbsolutePath -> TCM CheckResult
     checkFile inputFile = do
