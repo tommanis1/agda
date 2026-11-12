@@ -66,6 +66,7 @@ import Agda.Syntax.Common.Pretty
 import Agda.Utils.Time
          ( CPUTime(..) )
 import Agda.Utils.Atomic (newAtomic)
+import qualified Agda.TypeChecking.Monad.Base as Base
 import Agda.Utils.Monad (unlessM)
 import qualified Agda.Utils.IORef.Strict as Strict
 
@@ -101,9 +102,9 @@ relocated s = relocateSources <&> \case
 --   file with the same hash. The limits are the process's: one heap for all sessions.
 jsonServer :: TCM () -> TCM ()
 jsonServer setup = do
-  base   <- getSessionState   -- the backends and the primitive library; nothing has been loaded
-  env    <- askTC
-  shared <- liftIO $ Strict.newIORef $ SharedModules Map.empty 0 Map.empty
+  base   <- Base.getSessionState   -- the backends and the primitive library; nothing has been loaded
+  env    <- Base.askTC
+  shared <- liftIO $ Strict.newIORef $ Base.SharedModules Map.empty 0 Map.empty
   liftIO do
     hSetBuffering stdout LineBuffering
     hSetBuffering stdin  LineBuffering
@@ -120,14 +121,14 @@ jsonServer setup = do
 
       start name = do
         chan <- newChan
-        sess <- newAtomic base { stSessionShared = Just shared }
+        sess <- newAtomic base { Base.stSessionShared = Just shared }
         let body = replWith (readChan chan) (say name "JSON> ") (say name)
                             (liftIO . write name <=< relocated <=< jsonifyResponse) setup
             ended = do
               modifyMVar_ sessions $ pure . Map.filter (/= chan)
               say name "closed"
         _ <- forkIO $ flip finally ended $
-          void (runTCM env (initStateFromSessionState sess) body)
+          void (Base.runTCM env (Base.initStateFromSessionState sess) body)
             `catch` \ (e :: SomeException) -> say name ("died: " ++ show e)
         pure chan
 
